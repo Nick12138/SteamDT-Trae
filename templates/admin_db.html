@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数据库管理</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <header>
+    <h1>数据库管理</h1>
+    <p>管理 SQLite 中的基础信息数据。</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="actions">
+        <a href="/" class="button" style="margin-right:8px;">返回主页</a>
+        <button id="btnImportLocalAdmin">导入 base.json 到数据库</button>
+        <button id="btnClearDB" style="margin-left:8px;background:#c62828;color:#fff;">清空所有数据</button>
+        <button id="btnNormalize" style="margin-left:8px;">规范平台名称</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>新增饰品</h2>
+      <div class="actions">
+        <input id="addName" type="text" placeholder="名称（可选）" />
+        <input id="addMHN" type="text" placeholder="marketHashName（必填）" style="width:320px;" />
+        <input id="addPlatName" type="text" placeholder="初始平台名（可选）" />
+        <input id="addPlatItemId" type="text" placeholder="平台 itemId（可选）" />
+        <button id="btnAdminAdd">新增</button>
+      </div>
+      <p style="color:#666">说明：仅 marketHashName 为必填；如提供平台名，将作为该条目的初始平台记录。</p>
+    </section>
+
+    <section class="card">
+      <h2>查询与列表</h2>
+      <div class="actions">
+        <input id="adminQuery" type="text" placeholder="按名称或 marketHashName 筛选" />
+        <select id="adminPlatform">
+          <option value="">平台（可选）</option>
+          <option>BUFF</option>
+          <option>C5GAME</option>
+          <option>YOUPIN</option>
+          <option>HALOSKINS</option>
+          <option>STEAM</option>
+          <option>WAXPEER</option>
+          <option>SKINPORT</option>
+          <option>DMARKET</option>
+        </select>
+        <select id="adminLimit" style="margin-left:8px;">
+          <option value="20">20/页</option>
+          <option value="50" selected>50/页</option>
+          <option value="100">100/页</option>
+          <option value="200">200/页</option>
+        </select>
+        <select id="adminSortBy" style="margin-left:8px;">
+          <option value="">默认（marketHashName）</option>
+          <option value="id">按饰品ID</option>
+          <option value="min_price">按最低价</option>
+        </select>
+        <select id="adminSortOrder" style="margin-left:4px;">
+          <option value="asc" selected>升序</option>
+          <option value="desc">降序</option>
+        </select>
+        <button id="btnAdminSearch">查询</button>
+        <button id="btnPrev" style="margin-left:8px;">上一页</button>
+        <button id="btnNext" style="margin-left:4px;">下一页</button>
+        <span id="pageInfo" style="margin-left:8px;color:#666;"></span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>名称</th>
+            <th>marketHashName</th>
+            <th>BUFF</th>
+            <th>C5GAME</th>
+            <th>HALOSKINS</th>
+            <th>YOUPIN</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="adminTbody"></tbody>
+      </table>
+    </section>
+    <section class="card">
+      <h2>价格查询</h2>
+      <div class="actions">
+        <input id="adminPriceName" type="text" placeholder="输入或从列表点击填充 marketHashName" style="width:420px;" />
+        <button id="btnAdminPriceSingle">查询价格</button>
+        <button id="btnAdminPriceAvg">查询均价</button>
+      </div>
+      <pre id="adminPriceResult" style="background:#f6f8fa;padding:12px;min-height:80px;"></pre>
+    </section>
+
+    <section class="card">
+      <h2>批量按 ID 范围查询价格并入库导出</h2>
+      <div class="actions">
+        <input id="adminBatchIdRange" type="text" placeholder="例如 1-100" style="width:160px;" />
+        <button id="btnAdminBatchIdRange">执行批量查询</button>
+        <span style="margin-left:8px;color:#666;">将导出到 data/1-100.json，并入库到价格表</span>
+      </div>
+      <pre id="adminBatchIdRangeResult" style="background:#f6f8fa;padding:12px;min-height:80px;"></pre>
+    </section>
+  </main>
+
+  <script>
+    function encodeNameForC5(name) {
+      try { return encodeURIComponent(name || ''); } catch (e) { return ''; }
+    }
+    function base64utf8(s) {
+      try { return btoa(unescape(encodeURIComponent(s || ''))); } catch (e) { return ''; }
+    }
+    function zbtIconUrl(marketHashName) {
+      const b64 = base64utf8(marketHashName || '');
+      if (!b64) return null;
+      return `https://img.zbt.com/e/steam/item/730/${b64}.png`;
+    }
+    function linkForPlatform(platformName, itemId, name, marketHashName) {
+      const p = (platformName || '').toUpperCase();
+      if (p === 'BUFF') {
+        if (!itemId) return null;
+        return `https://buff.163.com/goods/${itemId}`;
+      }
+      if (p === 'C5' || p === 'C5GAME') {
+        if (!itemId) return null;
+        const enc = encodeNameForC5(name || marketHashName);
+        return `https://www.c5game.com/csgo/${itemId}/${enc}/sell`;
+      }
+      if (p === 'YOUPIN' || p === 'YOUPIN898') {
+        if (!itemId) return null;
+        return `https://www.youpin898.com/market/goods-list?listType=10&templateId=${itemId}&gameId=730`;
+      }
+      if (p === 'HALO' || p === 'HALOSKINS') {
+        if (!itemId) return null;
+        return `https://www.haloskins.com/market/${itemId}`;
+      }
+      if (p === 'STEAM') {
+        const enc = encodeURIComponent(marketHashName || name || '');
+        return `https://steamcommunity.com/market/listings/730/${enc}`;
+      }
+      if (p === 'SKINPORT') {
+        const enc = encodeURIComponent(marketHashName || name || '');
+        return `https://skinport.com/zh/market?search=${enc}&sort=price&order=asc`;
+      }
+      if (p === 'DMARKET') {
+        const enc = encodeURIComponent(marketHashName || name || '');
+        return `https://dmarket.com/zh/ingame-items/item-list/csgo-skins?ref=fDuhF5X91i&title=${enc}`;
+      }
+      return null;
+    }
+    async function fetchJSON(url, opts) {
+      const resp = await fetch(url, opts);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    async function importLocalAdmin() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json,application/json';
+      input.onchange = async () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          let payload;
+          try {
+            payload = JSON.parse(text);
+          } catch (e) {
+            alert('解析 JSON 失败，请检查文件格式');
+            return;
+          }
+          const data = await fetchJSON('/api/base/import_payload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          alert(`导入完成：新增 ${data.inserted} 条，跳过 ${data.skipped} 条，新增平台 ${data.platforms_inserted} 条`);
+          await loadAdminList();
+        } catch (e) {
+          alert('导入失败: ' + e.message);
+        }
+      };
+      input.click();
+    }
+
+    async function clearDB() {
+      if (!confirm('确定清空数据库中所有条目吗？此操作不可恢复。')) return;
+      try {
+        const data = await fetchJSON('/api/admin/clear', { method: 'POST' });
+        alert('已清空');
+        await loadAdminList();
+      } catch (e) {
+        alert('清空失败: ' + e.message);
+      }
+    }
+
+    async function deleteItem(marketHashName) {
+      if (!confirm('确定删除此条目吗？')) return;
+      try {
+        await fetchJSON(`/api/admin/item?marketHashName=${encodeURIComponent(marketHashName)}`, { method: 'DELETE' });
+        await loadAdminList();
+      } catch (e) {
+        alert('删除失败: ' + e.message);
+      }
+    }
+
+    async function normalizePlatforms() {
+      if (!confirm('将把 C5 统一为 C5GAME、HALO 统一为 HALOSKINS，并合并重复记录。是否继续？')) return;
+      try {
+        const data = await fetchJSON('/api/admin/platforms/normalize', { method: 'POST' });
+        alert(`规范化完成：重命名 ${data.normalized || 0} 条，合并重复 ${data.merged || 0} 条`);
+        await loadAdminList();
+      } catch (e) {
+        alert('规范化失败: ' + e.message);
+      }
+    }
+
+    async function addItem() {
+      const name = document.getElementById('addName').value.trim();
+      const mhn = document.getElementById('addMHN').value.trim();
+      const platName = document.getElementById('addPlatName').value.trim();
+      const platItemId = document.getElementById('addPlatItemId').value.trim();
+      if (!mhn) { alert('请填写 marketHashName'); return; }
+      const body = { name, marketHashName: mhn };
+      if (platName) { body.platformList = [{ name: platName, itemId: platItemId }]; }
+      try {
+        const resp = await fetch('/api/admin/item', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) { throw new Error(data.error || `HTTP ${resp.status}`); }
+        document.getElementById('addName').value = '';
+        document.getElementById('addMHN').value = '';
+        document.getElementById('addPlatName').value = '';
+        document.getElementById('addPlatItemId').value = '';
+        alert('新增成功');
+        await loadAdminList();
+      } catch (e) {
+        alert('新增失败: ' + e.message);
+      }
+    }
+
+    async function adminPriceSingle() {
+      const mhn = document.getElementById('adminPriceName').value.trim();
+      if (!mhn) { alert('请填写 marketHashName'); return; }
+      try {
+        const data = await fetchJSON(`/api/admin/price/single?marketHashName=${encodeURIComponent(mhn)}`);
+        document.getElementById('adminPriceResult').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        document.getElementById('adminPriceResult').textContent = '查询失败: ' + e.message;
+      }
+    }
+
+    async function adminPriceAvg() {
+      const mhn = document.getElementById('adminPriceName').value.trim();
+      if (!mhn) { alert('请填写 marketHashName'); return; }
+      try {
+        const data = await fetchJSON(`/api/admin/price/avg?marketHashName=${encodeURIComponent(mhn)}`);
+        document.getElementById('adminPriceResult').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        document.getElementById('adminPriceResult').textContent = '查询失败: ' + e.message;
+      }
+    }
+
+    async function adminBatchByIdRange() {
+      const rng = document.getElementById('adminBatchIdRange').value.trim();
+      if (!rng) { alert('请填写ID范围，例如 1-100'); return; }
+      const pre = document.getElementById('adminBatchIdRangeResult');
+      pre.textContent = '执行中...';
+      try {
+        const data = await fetchJSON('/api/admin/price/batch_by_id', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idRange: rng })
+        });
+        pre.textContent = JSON.stringify(data, null, 2);
+        const processed = data.processedNames || 0;
+        const inserted = data.insertedRows || 0;
+        const saved = data.saved || '';
+        alert(`批量完成：处理 ${processed} 个名称，入库 ${inserted} 行，导出文件：${saved}`);
+      } catch (e) {
+        pre.textContent = '失败: ' + e.message;
+      }
+    }
+
+    let adminOffset = 0;
+    let adminTotal = 0;
+
+    async function loadAdminList() {
+      const q = document.getElementById('adminQuery').value.trim();
+      const platform = document.getElementById('adminPlatform').value.trim();
+      const limit = parseInt(document.getElementById('adminLimit').value, 10) || 50;
+      const sortBy = (document.getElementById('adminSortBy').value || '').trim();
+      const order = (document.getElementById('adminSortOrder').value || 'asc').trim();
+      const data = await fetchJSON(`/api/admin/items?q=${encodeURIComponent(q)}&platform=${encodeURIComponent(platform)}&limit=${limit}&offset=${adminOffset}&sortBy=${encodeURIComponent(sortBy)}&order=${encodeURIComponent(order)}`);
+      const tbody = document.getElementById('adminTbody');
+      tbody.innerHTML = '';
+      (data.data || []).forEach(item => {
+        const tr = document.createElement('tr');
+        const td1 = document.createElement('td');
+        const td2 = document.createElement('td');
+        const tdBuff = document.createElement('td');
+        const tdC5 = document.createElement('td');
+        const tdHalo = document.createElement('td');
+        const tdYp = document.createElement('td');
+        const tdOp = document.createElement('td');
+        // icon + name
+        const icon = zbtIconUrl(item.marketHashName);
+        if (icon) {
+          const img = document.createElement('img');
+          img.src = icon;
+          img.alt = item.name || item.marketHashName || '';
+          img.width = 24;
+          img.height = 24;
+          img.loading = 'lazy';
+          img.style.verticalAlign = 'middle';
+          img.style.marginRight = '6px';
+          img.onerror = () => { img.style.display = 'none'; };
+          td1.appendChild(img);
+        }
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = item.name || '';
+        td1.appendChild(nameSpan);
+        td2.textContent = item.marketHashName || '';
+        // 初始化目标平台列占位
+        [tdBuff, tdC5, tdHalo, tdYp].forEach(td => { td.textContent = '-'; });
+        // 拉取该条目的各平台最新价格，填充最低价与链接
+        (async () => {
+          try {
+            const priceData = await fetchJSON(`/api/admin/price/single?marketHashName=${encodeURIComponent(item.marketHashName)}`);
+            const plats = priceData.platforms || [];
+            const byPlat = {};
+            plats.forEach(p => { byPlat[(p.platform || '').toUpperCase()] = p; });
+            const fillCell = (platName, td) => {
+              const pdata = byPlat[platName];
+              if (!pdata || pdata.sell_price == null) { td.textContent = '-'; return; }
+              const href = linkForPlatform(platName, pdata.itemId, item.name, item.marketHashName);
+              const a = document.createElement('a');
+              a.href = href || 'javascript:void(0)';
+              if (href) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+              a.textContent = String(pdata.sell_price);
+              a.className = 'price-link';
+              const tooltip = document.createElement('div');
+              tooltip.className = 'tooltip';
+              tooltip.style.display = 'none';
+              tooltip.innerHTML = `
+                <div><strong>${platName}</strong></div>
+                <div>售卖价：${pdata.sell_price ?? '-'}</div>
+                <div>求购价：${pdata.bidding_price ?? '-'}</div>
+                <div>售卖数量：${pdata.sell_count ?? '-'}</div>
+                <div>求购数量：${pdata.bidding_count ?? '-'}</div>
+                <div>更新时间：${pdata.update_time_text ?? (pdata.update_time ?? '-')}</div>
+              `;
+              const wrap = document.createElement('div');
+              wrap.style.position = 'relative';
+              wrap.style.display = 'inline-block';
+              wrap.appendChild(a);
+              wrap.appendChild(tooltip);
+              a.addEventListener('mouseenter', () => { tooltip.style.display = 'block'; });
+              a.addEventListener('mouseleave', () => { tooltip.style.display = 'none'; });
+              td.innerHTML = '';
+              td.appendChild(wrap);
+            };
+            fillCell('BUFF', tdBuff);
+            fillCell('C5GAME', tdC5);
+            fillCell('HALOSKINS', tdHalo);
+            fillCell('YOUPIN', tdYp);
+          } catch (e) {
+            // 保持占位
+          }
+        })();
+
+        const btnDel = document.createElement('button');
+        btnDel.textContent = '删除';
+        btnDel.addEventListener('click', () => deleteItem(item.marketHashName));
+        tdOp.appendChild(btnDel);
+        const btnPrice = document.createElement('button');
+        btnPrice.textContent = '价格';
+        btnPrice.style.marginLeft = '8px';
+        btnPrice.addEventListener('click', () => {
+          document.getElementById('adminPriceName').value = item.marketHashName || '';
+          adminPriceSingle();
+        });
+        tdOp.appendChild(btnPrice);
+        const btnAvg = document.createElement('button');
+        btnAvg.textContent = '均价';
+        btnAvg.style.marginLeft = '4px';
+        btnAvg.addEventListener('click', () => {
+          document.getElementById('adminPriceName').value = item.marketHashName || '';
+          adminPriceAvg();
+        });
+        tdOp.appendChild(btnAvg);
+        tr.appendChild(td1);
+        tr.appendChild(td2);
+        tr.appendChild(tdBuff);
+        tr.appendChild(tdC5);
+        tr.appendChild(tdHalo);
+        tr.appendChild(tdYp);
+        tr.appendChild(tdOp);
+        tbody.appendChild(tr);
+      });
+
+      // 分页信息与按钮状态
+      adminTotal = data.total || 0;
+      const pageInfo = document.getElementById('pageInfo');
+      const totalPages = Math.max(1, Math.ceil(adminTotal / limit));
+      const currentPage = Math.floor(adminOffset / limit) + 1;
+      pageInfo.textContent = `第 ${currentPage} / ${totalPages} 页，共 ${adminTotal} 条`;
+      document.getElementById('btnPrev').disabled = adminOffset <= 0;
+      document.getElementById('btnNext').disabled = adminOffset + limit >= adminTotal;
+    }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('btnAdminSearch').addEventListener('click', () => { adminOffset = 0; loadAdminList(); });
+      document.getElementById('adminLimit').addEventListener('change', () => { adminOffset = 0; loadAdminList(); });
+      document.getElementById('adminSortBy').addEventListener('change', () => { adminOffset = 0; loadAdminList(); });
+      document.getElementById('adminSortOrder').addEventListener('change', () => { adminOffset = 0; loadAdminList(); });
+      document.getElementById('btnPrev').addEventListener('click', () => {
+        const limit = parseInt(document.getElementById('adminLimit').value, 10) || 50;
+        adminOffset = Math.max(0, adminOffset - limit);
+        loadAdminList();
+      });
+      document.getElementById('btnNext').addEventListener('click', () => {
+        const limit = parseInt(document.getElementById('adminLimit').value, 10) || 50;
+        const maxOffset = Math.max(0, adminTotal - limit);
+        adminOffset = Math.min(maxOffset, adminOffset + limit);
+        loadAdminList();
+      });
+      document.getElementById('btnImportLocalAdmin').addEventListener('click', importLocalAdmin);
+      document.getElementById('btnClearDB').addEventListener('click', clearDB);
+      document.getElementById('btnNormalize').addEventListener('click', normalizePlatforms);
+      document.getElementById('btnAdminAdd').addEventListener('click', addItem);
+      document.getElementById('btnAdminPriceSingle').addEventListener('click', adminPriceSingle);
+      document.getElementById('btnAdminPriceAvg').addEventListener('click', adminPriceAvg);
+      document.getElementById('btnAdminBatchIdRange').addEventListener('click', adminBatchByIdRange);
+      loadAdminList();
+    });
+  </script>
+</body>
+</html>
