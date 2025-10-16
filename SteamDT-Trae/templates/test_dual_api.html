@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>双 API 批量价格测试</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <style>
+    .card { border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+    .section-title { margin-bottom: 8px; }
+    .status { font-size: 13px; color: #333; margin-top: 8px; }
+    pre { background:#f6f8fa; padding:12px; min-height:80px; }
+  </style>
+  </head>
+<body>
+  <header>
+    <h1>双 API 批量价格测试（顺序交替写库）</h1>
+    <p>使用两把不同的 API key（<code>STEAMDT_API_KEY_1</code> 与 <code>STEAMDT_API_KEY_2</code>），按顺序交替每 30 秒获取一段 ID 范围，解析并写入数据库。可设置开始 ID，并提供开始/暂停/继续/停止与进度条。</p>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2 class="section-title">交替任务控制（30 秒间隔，写入数据库）</h2>
+      <div class="actions" style="margin-bottom:8px;">
+        <input id="dualStartId" type="number" min="1" placeholder="开始ID，例如 1" style="width:160px;margin-right:8px;" />
+        <span style="margin-right:8px;color:#666;">每次固定获取 100 个</span>
+        <button id="btnDualStart">开始</button>
+        <button id="btnDualPause">暂停</button>
+        <button id="btnDualResume">继续</button>
+        <button id="btnDualStop">停止</button>
+      </div>
+      <div>
+        <div class="progress" id="dualProgress"><div class="bar" id="dualProgressBar"></div></div>
+        <div class="status" style="margin-top:8px;color:#333;">
+          状态：<span id="dualState">idle</span>，
+          下次客户端：<span id="dualNextClient">1</span>，
+          下一窗口：<span id="dualNextRange">-</span>，
+          倒计时：<span id="dualCountdown">-</span>，
+          进度：<span id="dualProgText">0/0 (0%)</span>，
+          最近已获取区间：<span id="dualLastRange">-</span>
+        </div>
+        <div class="status" style="margin-top:4px;color:#666;">
+          说明：按“API1(开始ID-开始ID+99) → 30秒 → API2(下一段) → 30秒 → API1(再下一段)”循环直到最大ID。
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="section-title">单次验证（不写库，仅预览结果）</h2>
+      <div style="display:flex;gap:20px;">
+        <div style="flex:1;">
+          <div class="actions">
+            <button id="btnOnce1">API 1：立即获取 1-100</button>
+          </div>
+          <div class="status">最近一次：<span id="status1">-</span></div>
+          <pre id="result1"></pre>
+        </div>
+        <div style="flex:1;">
+          <div class="actions">
+            <button id="btnOnce2">API 2：立即获取 101-200</button>
+          </div>
+          <div class="status">最近一次：<span id="status2">-</span></div>
+          <pre id="result2"></pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // ------------- 交替任务（写库）UI 与控制 -------------
+    function renderDualUI(state) {
+      const bar = document.getElementById('dualProgressBar');
+      const stateEl = document.getElementById('dualState');
+      const nextClientEl = document.getElementById('dualNextClient');
+      const nextRangeEl = document.getElementById('dualNextRange');
+      const countdownEl = document.getElementById('dualCountdown');
+      const progTextEl = document.getElementById('dualProgText');
+      const lastRangeEl = document.getElementById('dualLastRange');
+
+      if (!state || !bar) return;
+      const percent = typeof state.percent === 'number' ? state.percent : 0;
+      bar.style.width = `${percent}%`;
+      if (stateEl) stateEl.textContent = state.state || '-';
+      if (nextClientEl) nextClientEl.textContent = state.nextClientId || 1;
+      if (nextRangeEl) nextRangeEl.textContent = `${state.currentStartId || 0}-${state.currentEndIdNext || 0}`;
+      if (countdownEl) {
+        if (state.paused) countdownEl.textContent = '暂停中';
+        else if (typeof state.nextRunSeconds === 'number') countdownEl.textContent = `${state.nextRunSeconds}s`;
+        else countdownEl.textContent = '-';
+      }
+      const total = state.maxId || 0;
+      const completed = state.completedCount || 0;
+      if (progTextEl) progTextEl.textContent = `${completed}/${total} (${percent}%)`;
+      const rng = state.lastProcessedRange ? `${state.lastProcessedRange[0]}-${state.lastProcessedRange[1]}` : '-';
+      if (lastRangeEl) lastRangeEl.textContent = rng;
+
+      // 控制按钮可用性
+      const btnStart = document.getElementById('btnDualStart');
+      const btnPause = document.getElementById('btnDualPause');
+      const btnResume = document.getElementById('btnDualResume');
+      const btnStop = document.getElementById('btnDualStop');
+      const running = !!state.running;
+      const paused = !!state.paused;
+      if (btnStart) btnStart.disabled = running;
+      if (btnPause) btnPause.disabled = !running || paused;
+      if (btnResume) btnResume.disabled = !running || !paused;
+      if (btnStop) btnStop.disabled = !running;
+    }
+
+    async function fetchJSON(url, options) {
+      const resp = await fetch(url, options);
+      const data = await resp.json().catch(() => ({}));
+      return data;
+    }
+
+    async function refreshDualStatus() {
+      try {
+        const data = await fetchJSON('/api/admin/dualjob/status');
+        renderDualUI(data);
+      } catch (e) { /* ignore */ }
+    }
+
+    async function dualStart() {
+      try {
+        const input = document.getElementById('dualStartId');
+        let startId = 1;
+        if (input && input.value) {
+          const v = parseInt(String(input.value).trim(), 10);
+          if (Number.isFinite(v) && v > 0) startId = v;
+        }
+        const payload = { startId, batchSize: 100, intervalSec: 30 };
+        const data = await fetchJSON('/api/admin/dualjob/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        renderDualUI(data);
+      } catch (e) {
+        alert('启动失败: ' + e.message);
+      }
+    }
+
+    async function dualPause() {
+      try { renderDualUI(await fetchJSON('/api/admin/dualjob/pause', { method: 'POST' })); }
+      catch (e) { alert('暂停失败: ' + e.message); }
+    }
+    async function dualResume() {
+      try { renderDualUI(await fetchJSON('/api/admin/dualjob/resume', { method: 'POST' })); }
+      catch (e) { alert('继续失败: ' + e.message); }
+    }
+    async function dualStop() {
+      try { renderDualUI(await fetchJSON('/api/admin/dualjob/stop', { method: 'POST' })); }
+      catch (e) { alert('停止失败: ' + e.message); }
+    }
+
+    // 每秒轮询状态
+    refreshDualStatus();
+    setInterval(refreshDualStatus, 1000);
+
+    // ------------- 单次验证（不写库） -------------
+    async function runOnce(clientId) {
+      try {
+        const resp = await fetch('/api/test/dual/fetch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientId })
+        });
+        const data = await resp.json().catch(() => ({}));
+        const ok = resp.ok && data && data.success;
+        const now = new Date();
+        const ts = now.toLocaleString();
+        const statusEl = document.getElementById(clientId === 1 ? 'status1' : 'status2');
+        const resultEl = document.getElementById(clientId === 1 ? 'result1' : 'result2');
+        if (ok) {
+          statusEl.textContent = `${ts} 成功，范围 ${data.range?.[0]}-${data.range?.[1]}，条目 ${data.count}`;
+          // 仅展示简要内容，避免过大输出
+          const preview = JSON.stringify(data.data).slice(0, 2000);
+          resultEl.textContent = preview + (preview.length === 2000 ? '\n... (已截断)' : '');
+        } else {
+          statusEl.textContent = `${ts} 失败：${data.error || resp.statusText}`;
+          resultEl.textContent = '';
+        }
+      } catch (e) {
+        const statusEl = document.getElementById(clientId === 1 ? 'status1' : 'status2');
+        statusEl.textContent = `异常：${e.message}`;
+      }
+    }
+
+    document.getElementById('btnOnce1').addEventListener('click', () => runOnce(1));
+    document.getElementById('btnOnce2').addEventListener('click', () => runOnce(2));
+    document.getElementById('btnDualStart').addEventListener('click', () => dualStart());
+    document.getElementById('btnDualPause').addEventListener('click', () => dualPause());
+    document.getElementById('btnDualResume').addEventListener('click', () => dualResume());
+    document.getElementById('btnDualStop').addEventListener('click', () => dualStop());
+  </script>
+</body>
+</html>
